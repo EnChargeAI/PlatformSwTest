@@ -28,25 +28,38 @@ The Nest, the NPU and CG are different RISC-V processors with their own DMAC and
 |---|---|---|---|
 | DMAC driven by | Nest RISC-V | NPU RISC-V | CG RISC-V |
 | Memory the DMAC can address | LPDDR, L3, RVSRAM, DCCM | LPDDR, L3, DCCM | LPDDR, L3, DCCM |
-| Linked-list descriptors | RVSRAM today (`DMAC_TEST_LL_POOL_ATTR`); DCCM should work too (a code comment says it fails; unverified) | DCCM (core cannot write DDR) | DCCM (core cannot write DDR) |
+| Memory the RISC-V can address | LPDDR, L3, RVSRAM, DCCM | L3, DCCM | L3, DCCM |
+| Linked-list descriptors | RVSRAM today, but expand to have the descriptors in every available memory type | DCCM, L3 | DCCM, L3 |
 | MMU CSRs and tables | Programmed directly (`MmuDriver`, `MmuMemApi`), before any NPU transfer | Never programmed by the NPU; pre-programmed by the Nest | Never programmed by CG; pre-programmed by the Nest |
 | Untranslated tests | Standalone ELFs (`TestDmacLife`, `TestDmacHwSpeed`, `TestDmacMmu`) | Standalone ELFs (`TestDmacLife`, `TestDmacHwSpeed`) | Standalone `TestDmacLife` in `test-cg-core-suite.elf` (single block) |
 | Translated tests | Standalone ELF (`TestDmacMmu`) | **Paired** with the Nest: the Nest programs the MMU and checks the result | **Paired** with the Nest, like the NPU (proposed, C-16) |
 | Reads physical DDR to verify | Yes, with translation off | Only through the Nest | Only through the Nest (proposed, C-16) |
 
-The NPU can run standalone, untranslated DMAC tests against L3, DDR and DCCM with no Nest involvement. A translated NPU transfer is a **pair**.
+The NPU and CG can run standalone, untranslated DMAC tests against their available edges with no Nest involvement.
 
-CG is paired with the Nest the same way as the NPU. CG has no MMU of its own, and it cannot program the MMU, so the Nest pre-programs the tables. CG programs the client id on its DMAC, so each transfer uses the table for that id. The Nest sends the request through the peer's control channel buffer, then checks the result and the physical pages. Standalone CG runs (single-block Life cases in `test-cg-core-suite.elf`) stay untranslated.
+Translated tests can for the NPU and CG will involve Nest operations to set up the MMU.  These will rely on a Nest binay to do so.
 
-There are three ways the same source is reused across the two processors:
+The Nest processor will be unrestricted.  It can run any test, edge, or with any configuration it needs.  And it can set this up independently.
 
-| Pattern | How it works | Examples |
-|---|---|---|
-| Same test source, recompiled for each processor | One `.cpp`, one ELF per processor, selected by `SYSTEM_TYPE_NEST` / `SYSTEM_TYPE_NPU` and `DmacTestInterface.hpp` | `TestDmacLife.cpp`, `TestDmacHwSpeed.cpp`, new `TestDmacDescriptor.cpp` (C-10) |
-| Nest test plus peer stub (NPU or CG) | Nest ELF owns the MMU; the stub only runs the transfer it is handed | `TestNestDmacMmuNpu.cpp` + `TestNpuDmacMmuStubMain.cpp` (NPU and CG builds) |
-| Shared helper header | The transfer, wait and reset code written once and included by both sides | Proposed `DmacMmuXferHelper.hpp` (see [Test hygiene](#test-hygiene)) |
+Each feature is one unordered pair of memories, including a memory with itself. A check means both ends are memories that processor's DMAC and RISC-V can address.
+
+| Edge | Nest | NPU | CG |
+|---|---|---|---|
+| `DMAC_TEST_EDGE_LPDDR_LPDDR` | ✓ | | |
+| `DMAC_TEST_EDGE_LPDDR_L3` | ✓ | | |
+| `DMAC_TEST_EDGE_LPDDR_RVSRAM` | ✓ | | |
+| `DMAC_TEST_EDGE_LPDDR_DCCM` | ✓ | | |
+| `DMAC_TEST_EDGE_L3_L3` | ✓ | ✓ | ✓ |
+| `DMAC_TEST_EDGE_L3_RVSRAM` | ✓ | | |
+| `DMAC_TEST_EDGE_L3_DCCM` | ✓ | ✓ | ✓ |
+| `DMAC_TEST_EDGE_RVSRAM_RVSRAM` | ✓ | | |
+| `DMAC_TEST_EDGE_RVSRAM_DCCM` | ✓ | | |
+| `DMAC_TEST_EDGE_DCCM_DCCM` | ✓ | ✓ | ✓ |
+
 
 ### Layers
+
+**Brian Costello: I dont think this should be designed here.  We should refer to another doc and talk about how we will use that**
 
 ```mermaid
 flowchart LR
@@ -66,7 +79,7 @@ flowchart LR
 ```
 
 ### Paired test flow
-
+**Brian Costello: I dont think this should be designed here.  We should refer to another doc and talk about how we will use that**
 ```mermaid
 sequenceDiagram
     participant S as Peer stub (NPU or CG)
@@ -116,8 +129,8 @@ Four test sources exist. `TestDmacLife` and `TestDmacHwSpeed` do not configure t
 
 | ID | Test | Runs on | What it checks |
 |---|---|---|---|
-| DMAC-MMU-T-01 | `Dmac` single-block matrix (`TestDmacLife.cpp`) | Nest, NPU, CG | One test per memory pair, single-block path. L3, DCCM and DDR pairs on all three processors (7 pairs); RVSRAM pairs on the Nest only (6 more). Source and destination are compared against a control copy. 13 cases on the Nest, 7 on the NPU, 7 on CG. |
-| DMAC-MMU-T-02 | `Dmac` linked-list matrix (`TestDmacLife.cpp`) | Nest, NPU (CG disabled) | Same pairs through a one-entry linked list. The Nest keeps the descriptor in RVSRAM. 13 cases on the Nest, 7 on the NPU, none on CG (disabled at build time). |
+| DMAC-MMU-T-01 | `Dmac` single-block matrix (`TestDmacLife.cpp`) | Nest, NPU, CG | One test per edge available on the DMAC for that processor, single-block path. Keep the test pattern that has the underflow and overflow pattern checking. On processors that have DMAC access to LPDDR, but not RISCv access, DCCM will need to be used as a staging area.  As is in the test today|
+| DMAC-MMU-T-02 | `Dmac` linked-list matrix (`TestDmacLife.cpp`) | Nest, NPU (CG disabled) | Same pairs through a varying linked list sizes per |
 | DMAC-MMU-T-03 | `DmacHwSpeed.NormalTest` (`TestDmacHwSpeed.cpp`) | Nest, NPU (CG disabled) | Throughput sweep: every DMAC engine, several block sizes, source and destination memory pairs, multi-entry linked lists, completion by `checkXferComplete`. Reports cycles. |
 | DMAC-MMU-T-04 | `DmacMmu.IidRangeCheck` | Nest | `setIid` accepts `maxIid_` and rejects `maxIid_ + 1` on single-block and linked-list descriptors; a rejected id leaves the descriptor unchanged; `init` clears the id. |
 | DMAC-MMU-T-05 | `DmacMmu.UidSweep` | Nest | Maps the same VA in the PF and VF0 to VF7 tables. Each client writes its own pattern through its id, then reads it back; translation is turned off and each physical page is checked. |
